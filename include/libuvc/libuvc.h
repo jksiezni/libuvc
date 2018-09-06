@@ -733,6 +733,8 @@ uvc_error_t uvc_yuyv2uv(uvc_frame_t *in, uvc_frame_t *out);
 uvc_error_t uvc_mjpeg2rgb(uvc_frame_t *in, uvc_frame_t *out);
 #endif
 
+uvc_error_t uvc_wrap_device(uvc_context_t *ctx, struct libusb_device_handle *usb_devh, uvc_device_handle_t **devh);
+
 #ifdef __cplusplus
 }
 #endif

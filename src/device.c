@@ -1789,3 +1789,79 @@ const uvc_format_desc_t *uvc_get_format_descs(uvc_device_handle_t *devh) {
   return devh->info->stream_ifs->format_descs;
 }
 
+uvc_error_t uvc_wrap_device(uvc_context_t *ctx, libusb_device_handle *usb_devh, uvc_device_handle_t **devh) {
+  uvc_error_t ret;
+  uvc_device_handle_t *internal_devh;
+  struct libusb_device_descriptor desc;
+
+  uvc_device_t *uvc_dev = malloc(sizeof(*uvc_dev));
+  uvc_dev->ctx = ctx;
+  uvc_dev->ref = 0;
+  uvc_dev->usb_dev = libusb_get_device(usb_devh);
+  uvc_ref_device(uvc_dev);
+
+  internal_devh = calloc(1, sizeof(*internal_devh));
+  internal_devh->dev = uvc_dev;
+  internal_devh->usb_devh = usb_devh;
+
+  ret = uvc_get_device_info(uvc_dev, &(internal_devh->info));
+
+  if (ret != UVC_SUCCESS)
+    goto fail;
+  UVC_DEBUG("claiming control interface %d", internal_devh->info->ctrl_if.bInterfaceNumber);
+  ret = uvc_claim_if(internal_devh, internal_devh->info->ctrl_if.bInterfaceNumber);
+  if (ret != UVC_SUCCESS)
+    goto fail;
+
+  libusb_get_device_descriptor(uvc_dev->usb_dev, &desc);
+  internal_devh->is_isight = (desc.idVendor == 0x05ac && desc.idProduct == 0x8501);
+
+  if (internal_devh->info->ctrl_if.bEndpointAddress) {
+    internal_devh->status_xfer = libusb_alloc_transfer(0);
+    if (!internal_devh->status_xfer) {
+      ret = UVC_ERROR_NO_MEM;
+      goto fail;
+    }
+
+    libusb_fill_interrupt_transfer(internal_devh->status_xfer,
+                                   usb_devh,
+                                   internal_devh->info->ctrl_if.bEndpointAddress,
+                                   internal_devh->status_buf,
+                                   sizeof(internal_devh->status_buf),
+                                   _uvc_status_callback,
+                                   internal_devh,
+                                   0);
+    int uret = libusb_submit_transfer(internal_devh->status_xfer);
+    UVC_DEBUG("libusb_submit_transfer() = %d", ret);
+
+    if (uret) {
+      fprintf(stderr,
+              "uvc: device has a status interrupt endpoint, but unable to read from it\n");
+      goto fail;
+    }
+  }
+
+  if (uvc_dev->ctx->own_usb_ctx && uvc_dev->ctx->open_devices == NULL) {
+    /* Since this is our first device, we need to spawn the event handler thread */
+    uvc_start_handler_thread(uvc_dev->ctx);
+  }
+
+  DL_APPEND(uvc_dev->ctx->open_devices, internal_devh);
+  *devh = internal_devh;
+
+  UVC_EXIT(ret);
+
+  return ret;
+
+fail:
+  if ( internal_devh->info ) {
+    uvc_release_if(internal_devh, internal_devh->info->ctrl_if.bInterfaceNumber);
+  }
+  libusb_close(usb_devh);
+  uvc_unref_device(uvc_dev);
+  uvc_free_devh(internal_devh);
+
+  UVC_EXIT(ret);
+
+  return ret;
+}
